@@ -38,12 +38,7 @@ if ! az aks show -g "${RG}" -n "${AKS_NAME}" >/dev/null 2>&1; then
     AKS_ARGS+=(--kubernetes-version "${K8S_VERSION}")
   fi
 
-  # Helpful defaults for apps / ingress
-  AKS_ARGS+=(
-    --enable-addons monitoring
-    --enable-oidc-issuer
-    --enable-workload-identity
-  )
+  
 
   az aks create "${AKS_ARGS[@]}" -o none
 else
