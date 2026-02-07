@@ -2,8 +2,8 @@
 set -euo pipefail
 
 # ========= USER SETTINGS =========
-SUBSCRIPTION_ID="${SUBSCRIPTION_ID:-}"         # optional: set if you have multiple subs
-RG="${RG:-kml_rg_test}"
+SUBSCRIPTION_ID="${SUBSCRIPTION_ID:-a2b28c85-1948-4263-90ca-bade2bac4df4}"         # optional: set if you have multiple subs
+RG="${RG:-kml_rg_main-eb1b8323fad242fd}"
 LOCATION="${LOCATION:-eastus}"                 # change if needed
 AKS_NAME="${AKS_NAME:-aks-test}"
 NODEPOOL="${NODEPOOL:-nodepool1}"
@@ -19,7 +19,6 @@ fi
 az account show -o table >/dev/null
 
 echo "[2/6] Create resource group (if needed)..."
-az group create -n "${RG}" -l "${LOCATION}" -o none
 
 echo "[3/6] Create AKS cluster (if needed)..."
 # Create AKS only if it doesn't exist
