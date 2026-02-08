@@ -1,67 +1,83 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# ========= USER SETTINGS =========
-SUBSCRIPTION_ID="${SUBSCRIPTION_ID:-a2b28c85-1948-4263-90ca-bade2bac4df4}"         # optional: set if you have multiple subs
-RG="${RG:-kml_rg_main-eb1b8323fad242fd}"
-LOCATION="${LOCATION:-eastus}"                 # change if needed
-AKS_NAME="${AKS_NAME:-aks-test}"
-NODEPOOL="${NODEPOOL:-nodepool1}"
-NODE_COUNT="${NODE_COUNT:-2}"
-VM_SIZE="${VM_SIZE:-Standard_D2s_v3}"
-K8S_VERSION="${K8S_VERSION:-}"                # optional
-# =================================
+### ====== EDIT THESE (or export as env vars) ======
+# Optional: set this if you have multiple subscriptions
+SUBSCRIPTION_ID="${SUBSCRIPTION_ID:-}"   # e.g. "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
 
-echo "[1/6] Azure login context..."
+RG="${RG:-rg-gitea-aks}"
+CLUSTER="${CLUSTER:-aks-gitea}"
+LOCATION="${LOCATION:-eastus}"
+
+# Node settings (prod-like but still reasonable)
+NODE_COUNT="${NODE_COUNT:-3}"
+NODE_SIZE="${NODE_SIZE:-Standard_D4s_v5}"   # good default (4 vCPU, 16GB). If quota is tight, try Standard_D2s_v5
+K8S_VERSION="${K8S_VERSION:-}"              # leave empty to use default/latest available in region
+
+# Networking (defaults are fine)
+NETWORK_PLUGIN="${NETWORK_PLUGIN:-azure}"   # azure or kubenet (kubenet uses fewer IPs)
+# If you want kubenet: export NETWORK_PLUGIN=kubenet
+
+# Optional: enable autoscaler
+ENABLE_AUTOSCALER="${ENABLE_AUTOSCALER:-false}"
+MIN_NODES="${MIN_NODES:-3}"
+MAX_NODES="${MAX_NODES:-5}"
+
+### ====== Preflight ======
+command -v az >/dev/null
+command -v kubectl >/dev/null || true
+
+echo "[1/7] Azure login + subscription context..."
+az account show >/dev/null 2>&1 || az login >/dev/null
+
 if [[ -n "${SUBSCRIPTION_ID}" ]]; then
   az account set --subscription "${SUBSCRIPTION_ID}"
 fi
-az account show -o table >/dev/null
 
-echo "[2/6] Create resource group (if needed)..."
+echo "Using subscription: $(az account show --query id -o tsv)"
 
-echo "[3/6] Create AKS cluster (if needed)..."
-# Create AKS only if it doesn't exist
-if ! az aks show -g "${RG}" -n "${AKS_NAME}" >/dev/null 2>&1; then
-  AKS_ARGS=(
-    -g "${RG}"
-    -n "${AKS_NAME}"
-    --nodepool-name "${NODEPOOL}"
-    --node-count "${NODE_COUNT}"
-    --node-vm-size "${VM_SIZE}"
-    --enable-managed-identity
-    --generate-ssh-keys
-  )
+echo "[2/7] Register providers (safe to rerun)..."
+az provider register --namespace Microsoft.ContainerService --wait >/dev/null
+az provider register --namespace Microsoft.Network --wait >/dev/null
 
-  # optional version pin
-  if [[ -n "${K8S_VERSION}" ]]; then
-    AKS_ARGS+=(--kubernetes-version "${K8S_VERSION}")
-  fi
+echo "[3/7] Create resource group (idempotent)..."
+az group create -n "${RG}" -l "${LOCATION}" >/dev/null
 
-  
-
-  az aks create "${AKS_ARGS[@]}" -o none
-else
-  echo "AKS already exists: ${AKS_NAME}"
+echo "[4/7] Create AKS (idempotent)..."
+# Build optional flags cleanly
+AKS_VERSION_FLAG=()
+if [[ -n "${K8S_VERSION}" ]]; then
+  AKS_VERSION_FLAG=(--kubernetes-version "${K8S_VERSION}")
 fi
 
-echo "[4/6] Get kubeconfig..."
-az aks get-credentials -g "${RG}" -n "${AKS_NAME}" --overwrite-existing -o none
+AUTOSCALER_FLAGS=()
+if [[ "${ENABLE_AUTOSCALER}" == "true" ]]; then
+  AUTOSCALER_FLAGS=(--enable-cluster-autoscaler --min-count "${MIN_NODES}" --max-count "${MAX_NODES}")
+fi
 
-echo "[5/6] Show nodes..."
+# Create if missing
+if az aks show -g "${RG}" -n "${CLUSTER}" >/dev/null 2>&1; then
+  echo "AKS cluster already exists: ${CLUSTER} (skipping create)"
+else
+  az aks create \
+    -g "${RG}" -n "${CLUSTER}" -l "${LOCATION}" \
+    --node-count "${NODE_COUNT}" \
+    --node-vm-size "${NODE_SIZE}" \
+    --network-plugin "${NETWORK_PLUGIN}" \
+    --enable-oidc-issuer \
+    --enable-workload-identity \
+    --generate-ssh-keys \
+    "${AKS_VERSION_FLAG[@]}" \
+    "${AUTOSCALER_FLAGS[@]}" \
+    >/dev/null
+fi
+
+echo "[5/7] Get kubeconfig..."
+az aks get-credentials -g "${RG}" -n "${CLUSTER}" --overwrite-existing >/dev/null
+
+echo "[6/7] Quick cluster checks..."
 kubectl get nodes -o wide
 
-echo "[6/6] Show storage classes..."
-kubectl get storageclass || true
-
-cat <<EOF
-
-DONE ✅
-Next:
-  ./02-install-gitea-postgres-ha.sh
-
-Notes:
-- In some sandbox subscriptions you may NOT have permission to scale nodepools later (RBAC). That’s okay.
-- We’ll keep the stack stable with CPU limits and maxSurge=0.
-
-EOF
+echo "[7/7] Done ✅"
+echo ""
+echo "Next step: run your Gitea HA install script (CNPG + RWX + Valkey + Gitea)."
